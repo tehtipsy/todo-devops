@@ -8,6 +8,8 @@
 # Environment:
 #   IMAGE_REGISTRY   registry path of the images, e.g. ghcr.io/my-user
 #   IMAGE_TAG        immutable tag to deploy (required for `production`)
+#   APP_HOSTNAME     `aws` overlay only: public hostname with an issued ACM
+#                    certificate; enables HTTPS (and HTTP -> HTTPS redirect)
 #   NAMESPACE        target namespace                  (default: todo)
 #   ROLLOUT_TIMEOUT  per-workload rollout timeout      (default: 180s)
 set -euo pipefail
@@ -46,6 +48,42 @@ EOF
 elif [[ "${OVERLAY}" != "local" ]]; then
   echo "IMAGE_REGISTRY and IMAGE_TAG are required for the ${OVERLAY} overlay" >&2
   exit 2
+fi
+
+if [[ -n "${APP_HOSTNAME:-}" ]]; then
+  if [[ "${OVERLAY}" != "aws" ]]; then
+    echo "APP_HOSTNAME is only supported with the aws overlay" >&2
+    exit 2
+  fi
+  if [[ ! "${APP_HOSTNAME}" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
+    echo "APP_HOSTNAME '${APP_HOSTNAME}' is not a valid lowercase DNS name" >&2
+    exit 2
+  fi
+  # HTTPS on the load balancer. Naming the host under `tls` lets the AWS Load
+  # Balancer Controller find the matching issued ACM certificate by itself, so
+  # no certificate ARN is needed. Port 80 stays open, but only to redirect.
+  # TLS 1.2+ only. The rule keeps matching any host, so the load balancer's own
+  # address still answers (with a certificate warning, as the name differs).
+  cat >> "${target}/kustomization.yaml" <<EOF
+patches:
+  - target:
+      kind: Ingress
+      name: todo
+    patch: |-
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts: ["${APP_HOSTNAME}"]
+      - op: replace
+        path: /metadata/annotations/alb.ingress.kubernetes.io~1listen-ports
+        value: '[{"HTTP": 80}, {"HTTPS": 443}]'
+      - op: add
+        path: /metadata/annotations/alb.ingress.kubernetes.io~1ssl-redirect
+        value: "443"
+      - op: add
+        path: /metadata/annotations/alb.ingress.kubernetes.io~1ssl-policy
+        value: ELBSecurityPolicy-TLS13-1-2-2021-06
+EOF
 fi
 
 echo "==> Context: $(kubectl config current-context)  overlay: ${OVERLAY}  tag: ${IMAGE_TAG:-local}"

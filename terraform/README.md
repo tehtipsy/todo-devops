@@ -20,6 +20,8 @@ terraform/
 │   ├── addons.tf       AWS Load Balancer Controller, metrics-server (Helm)
 │   ├── kubernetes.tf   default gp3 StorageClass, `todo` namespace, deploy RBAC
 │   ├── github-oidc.tf  keyless GitHub Actions → AWS trust
+│   ├── ecr.tf          image repositories
+│   ├── tls.tf          ACM certificate for the app's hostname (optional)
 │   └── ...             versions, providers, variables, outputs
 └── .trivyignore.yaml   accepted security-scan findings, each with its justification
 ```
@@ -221,9 +223,59 @@ On the very first deployment the load balancer needs **2-3 minutes** before its 
 resolves and the pods pass its health checks; until then the URL does not answer. Later deployments
 reuse the same load balancer and URL.
 
-The URL is plain HTTP on the load balancer's own hostname. HTTPS would need a domain and an ACM
-certificate, added to the Ingress as `alb.ingress.kubernetes.io/certificate-arn` with a 443
-listener.
+Without a hostname configured, the URL is plain HTTP on the load balancer's own address. For HTTPS,
+see the next section.
+
+### HTTPS on your own domain
+
+No certificate authority issues certificates for the load balancer's `*.elb.amazonaws.com` name, so
+HTTPS needs a hostname you control, e.g. `todo.example.com`. It must be a subdomain: the apex of a
+domain cannot be a CNAME. AWS Certificate Manager (ACM) issues and renews the certificate for free.
+
+1. **Request the certificate.** Set the hostname in `terraform/eks/terraform.tfvars` and apply:
+
+   ```hcl
+   app_hostname = "todo.example.com"
+   ```
+
+   ```bash
+   make aws-plan && make aws-up
+   terraform -chdir=terraform/eks output acm_validation_record
+   ```
+
+2. **Prove you own the domain.** At your DNS provider, add the `CNAME` record from that output
+   (`name` → `value`). With Cloudflare, set it to *DNS only*, not proxied. ACM checks for it
+   automatically and usually issues the certificate within minutes:
+
+   ```bash
+   aws acm list-certificates --region us-east-1 \
+     --query "CertificateSummaryList[?DomainName=='todo.example.com'].Status" --output text
+   ```
+
+   Wait for `ISSUED`. Keep the record: ACM uses it again to renew the certificate.
+
+3. **Point the hostname at the load balancer.** Add a second `CNAME`: `todo.example.com` → the
+   load balancer address (`kubectl -n todo get ingress todo`, ADDRESS column).
+
+4. **Deploy with the hostname.**
+   - From your machine: add `APP_HOSTNAME=todo.example.com` to the
+     [`deploy.sh` command](#from-your-machine-ecr).
+   - From the pipeline: add the variable `APP_HOSTNAME=todo.example.com` (in the repository or the
+     `aws` environment) and run the workflow. The job then also smoke-tests over HTTPS and checks
+     the HTTP → HTTPS redirect and the HSTS header.
+
+The load balancer then:
+- serves HTTPS with the ACM certificate, which the AWS Load Balancer Controller finds by hostname,
+  so no certificate ARN has to be configured;
+- allows TLS 1.2 and 1.3 only (`ELBSecurityPolicy-TLS13-1-2-2021-06`);
+- answers plain HTTP with a `301` redirect to HTTPS.
+
+Nginx adds `Strict-Transport-Security: max-age=31536000` to HTTPS responses only. Once a browser
+has seen it, it uses HTTPS for that hostname for a year - so don't serve the hostname over plain
+HTTP again later.
+
+TLS ends at the load balancer; from there to the pods traffic stays inside the VPC and is plain
+HTTP, which is the usual setup for an ALB.
 
 ### Ship a new version
 
@@ -363,6 +415,9 @@ empty it, delete the `prevent_destroy` line in `bootstrap/main.tf`, and run
 | `AccessDenied` on `iam:CreateRole` | The account forbids creating IAM roles: set `existing_iam_role_name` (e.g. `"LabRole"`) |
 | `EntityAlreadyExists` for the OIDC provider | The account already has GitHub's OIDC provider: set `create_github_oidc_provider = false` |
 | `exec plugin ... v1alpha1` from kubectl | AWS CLI v1 is too old; install AWS CLI v2 and re-run `aws eks update-kubeconfig` |
+| HTTPS does not answer; `kubectl -n todo describe ingress todo` shows "no certificate found for host" | The certificate is not `ISSUED` yet (validation record missing or wrong), or `APP_HOSTNAME` differs from `app_hostname` |
+| Certificate stuck in `PENDING_VALIDATION` | The validation CNAME is missing or proxied (Cloudflare: set it to *DNS only*); check it with `dig CNAME <name from the output>` |
+| `https://<load balancer address>` shows a certificate warning | Expected: the certificate is for your hostname, not for `*.elb.amazonaws.com`. Use the hostname |
 | `deploy-aws` is always skipped although the variables are set | `AWS_DEPLOY_ENABLED` is an environment variable: the job's `if:` only sees repository variables. Move it to *Settings → Secrets and variables → Actions → Variables* (repository) |
 | `deploy-aws` fails at *Configure AWS credentials* | The job must run in the `aws` environment and `github_repository` must match the repository exactly (case-sensitive) |
 | `deploy-aws` fails with `forbidden` from kubectl | The deploy role can only act in the `todo` namespace; check the namespace exists (`terraform apply` creates it) |

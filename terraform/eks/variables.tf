@@ -96,6 +96,25 @@ variable "node_max_size" {
   default     = 5
 }
 
+# --- Application -------------------------------------------------------------
+
+variable "app_hostname" {
+  description = <<-EOT
+    Public hostname of the application, e.g. "todo.example.com". When set, an
+    ACM certificate is requested for it and the application is served over
+    HTTPS. You must be able to add DNS records for it (a subdomain: the apex
+    of a domain cannot be a CNAME). null = plain HTTP on the load balancer's
+    own address.
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.app_hostname == null || can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", var.app_hostname))
+    error_message = "app_hostname must be a lowercase DNS name such as todo.example.com."
+  }
+}
+
 # --- CI/CD -------------------------------------------------------------------
 
 variable "github_repository" {

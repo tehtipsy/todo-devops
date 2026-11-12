@@ -11,6 +11,22 @@ upstream todo_backend {
 # Per-client rate limit for the API: 20 req/s sustained, short bursts allowed.
 limit_req_zone $binary_remote_addr zone=api_per_client:10m rate=20r/s;
 
+# TLS ends at the load balancer in front of Nginx, so $scheme is always http
+# here. The client's real scheme comes from X-Forwarded-Proto, which the AWS
+# load balancer and ingress controllers set; without one, use our own.
+map $http_x_forwarded_proto $client_scheme {
+    ""      $scheme;
+    default $http_x_forwarded_proto;
+}
+
+# HSTS ("only ever use HTTPS for this host") is sent only on responses that
+# went out over HTTPS - sending it over plain HTTP is meaningless, and an empty
+# value makes Nginx omit the header entirely.
+map $client_scheme $hsts_header {
+    https   "max-age=31536000";
+    default "";
+}
+
 server {
     listen 8080;
     server_name _;
@@ -27,6 +43,7 @@ server {
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'" always;
+    add_header Strict-Transport-Security $hsts_header always;
 
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml;
@@ -52,7 +69,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $client_scheme;
         # Correlates the Nginx access log line with the backend's log lines.
         proxy_set_header X-Request-Id $request_id;
 

@@ -475,6 +475,9 @@ jobs:
         env:
           IMAGE_REGISTRY: ${{ steps.ecr.outputs.registry }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          # Optional: serve over HTTPS on this hostname (its ACM certificate
+          # must be issued). Unset = plain HTTP on the load balancer address.
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
         run: scripts/deploy.sh aws
 
       - name: Smoke test
@@ -485,11 +488,40 @@ jobs:
           sleep 3
           scripts/smoke-test.sh http://localhost:18080
 
+      # End to end through the public HTTPS endpoint: DNS, certificate, TLS
+      # listener and the HTTP -> HTTPS redirect. Retries while the load
+      # balancer controller applies listener changes.
+      - name: Smoke test over HTTPS
+        if: vars.APP_HOSTNAME != ''
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null --max-time 10 "https://${APP_HOSTNAME}/nginx-health"; then break; fi
+            sleep 10
+          done
+          scripts/smoke-test.sh "https://${APP_HOSTNAME}"
+          redirect="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://${APP_HOSTNAME}/")"
+          echo "HTTP answers: ${redirect}"
+          case "${redirect}" in
+            "301 https://${APP_HOSTNAME}"*) echo "HTTP redirects to HTTPS" ;;
+            *) echo "::error::Expected a 301 redirect to https://${APP_HOSTNAME}/"; exit 1 ;;
+          esac
+          curl -sI "https://${APP_HOSTNAME}/" | grep -i '^strict-transport-security:' \
+            || { echo "::error::HSTS header missing on HTTPS"; exit 1; }
+
       # The ALB is created asynchronously by the load balancer controller; on
       # the very first deployment its hostname can take a minute to appear.
       - name: Publish application URL
         id: url
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
         run: |
+          if [ -n "${APP_HOSTNAME}" ]; then
+            echo "app_url=https://${APP_HOSTNAME}" >> "${GITHUB_OUTPUT}"
+            echo "Application URL: https://${APP_HOSTNAME}" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
           for _ in $(seq 1 30); do
             host="$(kubectl -n todo get ingress todo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
             if [ -n "${host}" ]; then

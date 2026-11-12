@@ -357,6 +357,9 @@ followed across the two tiers (`kubectl -n todo logs -l app.kubernetes.io/part-o
 - Pods get no Kubernetes API token.
 - The database and the API are not reachable from outside the cluster; only Nginx is exposed.
 - Nginx applies per-client rate limiting, a strict Content-Security-Policy and request size limits.
+- On AWS with a hostname configured, the load balancer serves HTTPS with an ACM certificate
+  (TLS 1.2/1.3 only), redirects HTTP to HTTPS, and Nginx adds HSTS to HTTPS responses
+  ([details](terraform/README.md#https-on-your-own-domain)).
 - Images are scanned (Trivy) before they are pushed; production dependencies are audited in CI.
 - Compose binds every published port to `127.0.0.1` and puts the database on an internal network.
 
