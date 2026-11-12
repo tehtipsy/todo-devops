@@ -22,6 +22,9 @@ crash.*.log
 *.tfvars
 !*.tfvars.example
 terraform/eks/backend.hcl
+# Local overrides, e.g. the local-state backend used in Learner Lab.
+override.tf
+*_override.tf
 
 # Editor / OS
 .vscode/

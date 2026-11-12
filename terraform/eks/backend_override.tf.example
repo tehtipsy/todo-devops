@@ -1,0 +1,18 @@
+# Local state, for accounts where the S3 state bucket cannot be used.
+#
+# AWS Academy Learner Lab blocks s3:GetBucketObjectLockConfiguration through a
+# service control policy, and the AWS provider calls it on every read of a
+# bucket - so the bootstrap stack cannot manage the state bucket there.
+#
+#   cp backend_override.tf.example backend_override.tf
+#   terraform init -reconfigure
+#
+# Terraform merges *_override.tf files over the configuration, replacing the
+# S3 backend in versions.tf. The override file is git-ignored.
+#
+# The state then lives only in terraform.tfstate on this machine. It contains
+# secrets, is git-ignored, and must not be lost while the environment exists:
+# without it Terraform can no longer destroy what it created.
+terraform {
+  backend "local" {}
+}

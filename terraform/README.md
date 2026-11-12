@@ -162,13 +162,22 @@ account):
 | `LabRole` does not trust `pods.eks.amazonaws.com` | No EKS Pod Identity: the EBS CSI driver and load balancer controller use the node's `LabRole` credentials |
 | Reading the `voclabs` session role is denied | The cluster grants its creator admin through EKS itself (`bootstrap_cluster_creator_admin_permissions`) |
 | AWS Shield is denied | The load balancer controller's WAF/Shield integrations are switched off (the app does not use them) |
+| `s3:GetBucketObjectLockConfiguration` is blocked by a service control policy | Terraform cannot manage any S3 bucket (the provider reads that setting on every refresh), so the bootstrap stack is skipped and the state is kept locally |
 | Credentials end with the lab session | Every AWS call starts failing with an explicit deny from `voc-cancel-cred`; start the lab again and refresh the credentials |
 
 ### Steps
 
 1. In the lab, **Start Lab**, then open **AWS Details → AWS CLI** and paste the three lines into
    `~/.aws/credentials` under `[default]`. Repeat this every time a new lab session starts.
-2. Follow [Setting it up](#setting-it-up), with this in `terraform/eks/terraform.tfvars`:
+2. **Skip the bootstrap stack.** Keep the state locally instead:
+
+   ```bash
+   cp terraform/eks/backend_override.tf.example terraform/eks/backend_override.tf
+   ```
+
+   The state is then `terraform/eks/terraform.tfstate`, on this machine only (git-ignored). Do not
+   delete it while the environment exists: Terraform needs it to destroy what it created.
+3. Create `terraform/eks/terraform.tfvars`:
 
    ```hcl
    aws_region             = "us-east-1"
@@ -176,7 +185,10 @@ account):
    github_repository      = "<owner>/todo-devops"
    ```
 
-3. For the pipeline: in the `aws` environment of the DevOps repository, add the secrets
+   and continue with [step 3 of Setting it up](#3-create-the-environment) (`make aws-plan`,
+   `make aws-up`).
+
+4. For the pipeline: in the `aws` environment of the DevOps repository, add the secrets
    `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from the same lab page, and
    the variables `AWS_DEPLOY_ENABLED`, `AWS_REGION`, `EKS_CLUSTER_NAME` printed by
    `terraform output github_actions_variables`. Do **not** set `AWS_ROLE_ARN`: that is what tells
@@ -192,6 +204,8 @@ Say so if you present it: these are the lab's constraints, not the design of cho
   each controller has its own role and pods cannot reach the node's credentials.
 - **Stored, broad deploy credentials.** The pipeline uses the lab session's keys, which act as
   cluster admin, instead of a keyless role confined to the `todo` namespace.
+- **Local state.** No remote state, no locking, no versioned history, and the state exists on one
+  laptop only.
 
 ## Security design
 
@@ -240,6 +254,8 @@ empty it, delete the `prevent_destroy` line in `bootstrap/main.tf`, and run
 
 | Symptom | Cause / fix |
 | --- | --- |
+| `GetObjectLockConfiguration ... explicit deny in a service control policy` (Learner Lab) | Terraform cannot manage S3 buckets in the lab: skip the bootstrap stack and use local state (see [Steps](#steps)) |
+| `Unknown output type: yaml` from the AWS CLI | `~/.aws/config` sets `output = yaml`, which only AWS CLI v2 supports: install v2, or pass `--output json` |
 | `explicit deny ... policy/voc-cancel-cred` | The Learner Lab session has ended: start the lab again and paste the new credentials into `~/.aws/credentials` (and the GitHub secrets) |
 | `UnauthorizedOperation` on `DescribeAvailabilityZones` (Learner Lab) | The region is not allowed in the lab: use `us-east-1` or `us-west-2` |
 | `AccessDenied` on `iam:CreateRole` | The account forbids creating IAM roles: set `existing_iam_role_name` (e.g. `"LabRole"`) |

@@ -71,8 +71,12 @@ tf-check: ## Format-check and validate both Terraform stacks (no AWS access need
 	$(TF_EKS) init -backend=false -input=false > /dev/null
 	$(TF_EKS) validate
 
+# Remote S3 state when terraform/eks/backend.hcl exists; otherwise the backend
+# comes from the configuration (e.g. backend_override.tf for local state).
+TF_BACKEND_CONFIG := $(if $(wildcard terraform/eks/backend.hcl),-backend-config=backend.hcl,)
+
 aws-plan: ## Show what `aws-up` would change in AWS
-	$(TF_EKS) init -backend-config=backend.hcl -input=false
+	$(TF_EKS) init $(TF_BACKEND_CONFIG) -input=false
 	$(TF_EKS) plan -out=eks.tfplan
 
 aws-up: ## Create or update the EKS environment (applies the reviewed plan)
