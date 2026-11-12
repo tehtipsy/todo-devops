@@ -140,12 +140,18 @@ kubectl delete namespace observability
 
 [`terraform/`](terraform/README.md) creates a production-style AWS environment: a VPC with
 private worker nodes, an EKS cluster with NetworkPolicy enforcement, the AWS Load Balancer
-Controller, encrypted EBS storage, and a keyless (OIDC) deploy role for GitHub Actions. The
-application is then deployed by the pipeline's **deploy-aws** job with the `aws` overlay: the same
-manifests, exposed through an Application Load Balancer.
+Controller, encrypted EBS storage, ECR repositories for the images, and a keyless (OIDC) deploy
+role for GitHub Actions. The application is then deployed with the `aws` overlay - the same
+manifests, exposed through an Application Load Balancer - either from your machine (images pushed
+to ECR) or by the pipeline's **deploy-aws** job.
 
 ```bash
-make aws-plan && make aws-up     # after the one-time bootstrap described in terraform/README.md
+make aws-plan && make aws-up     # 1. create the environment (after the setup in terraform/README.md)
+
+# 2. push the images to ECR and deploy - full commands in terraform/README.md
+IMAGE_REGISTRY=<ecr registry> IMAGE_TAG=<tag> scripts/deploy.sh aws
+kubectl -n todo get ingress todo # 3. ADDRESS = the application URL (live after 2-3 minutes)
+
 make aws-down                    # tear everything down again
 ```
 
@@ -154,8 +160,9 @@ make aws-down                    # tear everything down again
 It also runs in **AWS Academy Learner Lab**, which forbids creating IAM roles: set
 `existing_iam_role_name = "LabRole"` and the lab's role is reused instead.
 
-Full instructions, architecture, security design, costs and the Learner Lab specifics:
-[`terraform/README.md`](terraform/README.md).
+Full instructions - creating the environment, [deploying and updating the
+application](terraform/README.md#deploying-the-application), security design, costs and the
+Learner Lab specifics: [`terraform/README.md`](terraform/README.md).
 
 ## Docker images
 

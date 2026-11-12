@@ -50,6 +50,7 @@ flowchart LR
 | Nodes | Managed node group, 3 × `t3.medium` (Amazon Linux 2023) in private subnets, rolling updates one node at a time |
 | Cluster add-ons | VPC CNI **with NetworkPolicy enforcement**, CoreDNS, kube-proxy, EKS Pod Identity agent, EBS CSI driver, AWS Load Balancer Controller, metrics-server |
 | Kubernetes | Default encrypted `gp3` StorageClass; the `todo` namespace; RBAC for the deploy identity |
+| Registry | ECR repositories `todo-backend` and `todo-frontend`: immutable tags, scan on push, last 20 images kept; nodes pull with their own role, so no registry secret is needed |
 | CI/CD access | GitHub OIDC provider and a deploy role that only a job in the `aws` environment of your DevOps repository can assume |
 
 The PostgreSQL database stays in the cluster as the existing StatefulSet. Its data lives on an
@@ -125,7 +126,61 @@ terraform -chdir=terraform/eks apply eks.tfplan
 $(terraform -chdir=terraform/eks output -raw configure_kubectl)
 ```
 
-### 4. Let the pipeline deploy
+### 4. Deploy the application
+
+The environment starts empty. Continue with [Deploying the application](#deploying-the-application).
+
+## Deploying the application
+
+The application is deployed with the same manifests as everywhere else, through the
+[`aws` overlay](../k8s/overlays/aws/kustomization.yaml): the production overlay (pinned images,
+autoscaling) with the Ingress handed to the AWS Load Balancer Controller, which creates an
+internet-facing Application Load Balancer for it.
+
+```
+Browser ──HTTP──> ALB ──> frontend pods (Nginx: UI + /api/ proxy) ──> backend pods ──> postgres-0 ──> EBS gp3 volume
+                  │                                                        ▲
+                  └─ health check: /nginx-health                 images pulled from ECR by the nodes
+```
+
+There are two ways to get images into the cluster:
+
+| | From your machine | From the pipeline |
+| --- | --- | --- |
+| Registry | ECR, created by this stack | GHCR, pushed by the CI/CD pipeline |
+| Credentials needed | Your AWS credentials | GitHub environment set up as below; GHCR pull access |
+| Good for | First deployment, Learner Lab, demos | Continuous delivery from `main` |
+
+### From your machine (ECR)
+
+Requires Docker with Buildx (for `build-images.sh`) and kubectl pointed at the cluster
+(`$(terraform -chdir=terraform/eks output -raw configure_kubectl)`, which needs AWS CLI v2).
+
+```bash
+REGISTRY=$(terraform -chdir=terraform/eks output -raw ecr_registry)
+REGION=$(terraform -chdir=terraform/eks output -raw region)
+# Same tag scheme as the pipeline: <app commit>-<devops commit>. Commit first, so the tag
+# identifies exactly what the image contains.
+TAG="$(git -C ../todo-app rev-parse --short=7 HEAD)-$(git rev-parse --short=7 HEAD)"
+
+# 1. Build and push both images
+scripts/build-images.sh local
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+for c in backend frontend; do
+  docker tag "todo-$c:local" "$REGISTRY/todo-$c:$TAG"
+  docker push "$REGISTRY/todo-$c:$TAG"
+done
+
+# 2. Deploy that exact release
+IMAGE_REGISTRY=$REGISTRY IMAGE_TAG=$TAG scripts/deploy.sh aws
+```
+
+`deploy.sh` creates the database Secret on the first run (random password, never stored in Git),
+applies the manifests with the images pinned to `$TAG`, waits for PostgreSQL, the backend and the
+frontend to roll out, and rolls a Deployment back if it does not become healthy. The ECR login
+token is valid for 12 hours.
+
+### From the pipeline (GHCR)
 
 1. In the DevOps repository on GitHub, create an environment named **`aws`** (*Settings →
    Environments*). Restrict it to the `main` branch, and add yourself as a required reviewer if
@@ -141,14 +196,44 @@ $(terraform -chdir=terraform/eks output -raw configure_kubectl)
    passed the kind end-to-end test, smoke-tests it and publishes the load balancer URL in the run
    summary.
 
-To deploy from your own machine instead (as cluster admin):
+### Verify it
 
 ```bash
-IMAGE_REGISTRY=ghcr.io/<owner> IMAGE_TAG=<tag> scripts/deploy.sh aws
-kubectl -n todo get ingress todo    # ADDRESS column = the application URL
+URL="http://$(kubectl -n todo get ingress todo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+echo "$URL"                          # the application
+scripts/smoke-test.sh "$URL"         # end-to-end check through the load balancer
+kubectl -n todo get pods,hpa,pvc     # 2 frontend, 2+ backend, postgres-0; volume Bound
 ```
 
-Monitoring works unchanged on EKS: `scripts/monitoring-up.sh`.
+On the very first deployment the load balancer needs **2-3 minutes** before its DNS name
+resolves and the pods pass its health checks; until then the URL does not answer. Later deployments
+reuse the same load balancer and URL.
+
+The URL is plain HTTP on the load balancer's own hostname. HTTPS would need a domain and an ACM
+certificate, added to the Ingress as `alb.ingress.kubernetes.io/certificate-arn` with a 443
+listener.
+
+### Ship a new version
+
+Commit your changes, then repeat [From your machine](#from-your-machine-ecr) - the new commits
+produce a new tag. Tags are immutable, so an existing tag can never be overwritten with different
+contents. Rollouts replace pods one at a time and only continue once each new pod is healthy in the
+load balancer, so the app stays available throughout.
+
+### Roll back
+
+```bash
+kubectl -n todo rollout undo deployment/backend deployment/frontend    # previous revision
+
+# or redeploy any earlier release still in ECR (the last 20 are kept):
+aws ecr describe-images --repository-name todo-backend --query 'imageDetails[].imageTags[0]' --output text
+IMAGE_REGISTRY=$REGISTRY IMAGE_TAG=<earlier-tag> scripts/deploy.sh aws
+```
+
+### Monitoring
+
+Works unchanged on EKS: `scripts/monitoring-up.sh` installs Prometheus and Grafana into the
+`observability` namespace, and the backend NetworkPolicy already admits scrapes from there.
 
 ## AWS Academy Learner Lab
 
@@ -186,7 +271,8 @@ account):
    ```
 
    and continue with [step 3 of Setting it up](#3-create-the-environment) (`make aws-plan`,
-   `make aws-up`).
+   `make aws-up`), then [deploy from your machine](#from-your-machine-ecr). ECR is the simpler
+   route in the lab: it needs no GitHub setup, and the nodes pull with `LabRole`.
 
 4. For the pipeline: in the `aws` environment of the DevOps repository, add the secrets
    `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from the same lab page, and
@@ -263,7 +349,10 @@ empty it, delete the `prevent_destroy` line in `bootstrap/main.tf`, and run
 | `exec plugin ... v1alpha1` from kubectl | AWS CLI v1 is too old; install AWS CLI v2 and re-run `aws eks update-kubeconfig` |
 | `deploy-aws` fails at *Configure AWS credentials* | The job must run in the `aws` environment and `github_repository` must match the repository exactly (case-sensitive) |
 | `deploy-aws` fails with `forbidden` from kubectl | The deploy role can only act in the `todo` namespace; check the namespace exists (`terraform apply` creates it) |
-| Pods `ImagePullBackOff` | GHCR packages are private: make them public or add the `REGISTRY_PULL_*` secrets |
+| Pods `ImagePullBackOff` | GHCR: the packages are private; make them public or add the `REGISTRY_PULL_*` secrets. ECR: the tag was not pushed (`aws ecr describe-images --repository-name todo-backend`) |
+| `tag invalid ... already exists` when pushing to ECR | Tags are immutable: commit your change so the tag changes, or delete the old image first |
+| The application URL does not answer right after the first deployment | The load balancer takes 2-3 minutes to become reachable; `kubectl -n todo describe ingress todo` shows its events |
+| HorizontalPodAutoscaler missing from the `todo` namespace | It was applied by a version of the production overlay without `namespace: todo` and landed in `default`; redeploy and `kubectl -n default delete hpa backend` |
 | PostgreSQL pod `Pending` | `kubectl get pvc -n todo`: the EBS CSI driver or the gp3 StorageClass is missing; re-run `terraform apply` |
 | Ingress has no ADDRESS | `kubectl -n kube-system logs deploy/aws-load-balancer-controller`; the public subnets need the `kubernetes.io/role/elb` tag (set by Terraform) |
 | `terraform destroy` stuck on the VPC | An ALB or ENI created outside Terraform still exists, e.g. the namespace was deleted by hand while the controller was gone. Delete the leftover load balancer in the EC2 console and re-run destroy |
