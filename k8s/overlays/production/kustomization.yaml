@@ -1,0 +1,32 @@
+# Registry-backed deployment used by the CI/CD pipeline.
+#
+# The image references below are placeholders: scripts/deploy.sh pins the real
+# registry path and the immutable tag of the build being deployed, so this file
+# never has to be edited (and a `latest` tag is never deployed).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - hpa.yaml
+
+patches:
+  # The HorizontalPodAutoscaler owns the replica count; leaving `replicas` in
+  # the Deployment would reset it on every apply.
+  - target:
+      kind: Deployment
+      name: backend
+    patch: |-
+      - op: remove
+        path: /spec/replicas
+  # Credentials for pulling private images from GHCR. Optional: created by
+  # scripts/ensure-secrets.sh when REGISTRY_USERNAME / REGISTRY_TOKEN are set,
+  # and ignored by the kubelet when the images are public.
+  - target:
+      kind: Deployment
+      name: (backend|frontend)
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: registry-credentials

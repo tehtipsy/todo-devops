@@ -1,0 +1,25 @@
+# Local cluster (minikube / kind): runs the images built on this machine and
+# loaded into the cluster by scripts/local-up.sh - nothing is pulled from a registry.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: todo-backend
+    newName: todo-backend
+    newTag: local
+  - name: todo-frontend
+    newName: todo-frontend
+    newTag: local
+
+patches:
+  # Easier to follow while developing.
+  - target:
+      kind: ConfigMap
+      name: backend-config
+    patch: |-
+      - op: replace
+        path: /data/LOG_LEVEL
+        value: debug

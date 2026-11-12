@@ -1,0 +1,24 @@
+# Scale the API between 2 and 6 replicas on CPU utilisation (relative to the
+# container's CPU request). Requires metrics-server in the cluster.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Avoid flapping: wait for 5 quiet minutes before removing pods.
+      stabilizationWindowSeconds: 300
