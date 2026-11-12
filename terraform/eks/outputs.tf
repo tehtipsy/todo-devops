@@ -18,6 +18,11 @@ output "vpc_id" {
   value       = module.vpc.vpc_id
 }
 
+output "ecr_registry" {
+  description = "Registry host of the ECR repositories; use as IMAGE_REGISTRY for scripts/deploy.sh."
+  value       = split("/", aws_ecr_repository.app["todo-backend"].repository_url)[0]
+}
+
 output "configure_kubectl" {
   description = "Command that points kubectl at the cluster."
   value       = "aws eks update-kubeconfig --region ${var.aws_region} --name ${aws_eks_cluster.this.name}"
