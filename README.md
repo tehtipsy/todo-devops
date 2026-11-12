@@ -13,6 +13,7 @@ build input.
 | Container images | Docker, multi-stage, BuildKit | [`docker/`](docker/) |
 | Local environment | Docker Compose | [`docker-compose.yml`](docker-compose.yml) |
 | Orchestration | Kubernetes + Kustomize | [`k8s/`](k8s/) |
+| Cloud infrastructure | Terraform → AWS (VPC, EKS, ALB) | [`terraform/`](terraform/README.md) |
 | CI/CD | GitHub Actions | [`.github/workflows/cicd.yml`](.github/workflows/cicd.yml) |
 | Monitoring | Prometheus, Grafana, Alertmanager | [`monitoring/`](monitoring/) |
 | Automation | Bash scripts, Makefile | [`scripts/`](scripts/), [`Makefile`](Makefile) |
@@ -51,6 +52,7 @@ flowchart LR
 | Docker with **Buildx** and the **Compose** plugin | Building images, local environment | Docker Desktop includes both. On Ubuntu: `sudo apt-get install docker-buildx docker-compose-v2` |
 | `kubectl`, `minikube` | Kubernetes deployment | kind or k3s work as well |
 | `helm` | Installing the monitoring stack | |
+| `terraform` ≥ 1.10, AWS CLI v2 | AWS deployment only | See [`terraform/README.md`](terraform/README.md) |
 | `make` | Optional shortcuts | Every target is a thin wrapper around a command shown below |
 
 Both repositories are expected side by side:
@@ -134,6 +136,27 @@ helm -n observability uninstall kube-prometheus-stack                    # the m
 kubectl delete namespace observability
 ```
 
+## Deploying to AWS (Terraform + EKS)
+
+[`terraform/`](terraform/README.md) creates a production-style AWS environment: a VPC with
+private worker nodes, an EKS cluster with NetworkPolicy enforcement, the AWS Load Balancer
+Controller, encrypted EBS storage, and a keyless (OIDC) deploy role for GitHub Actions. The
+application is then deployed by the pipeline's **deploy-aws** job with the `aws` overlay: the same
+manifests, exposed through an Application Load Balancer.
+
+```bash
+make aws-plan && make aws-up     # after the one-time bootstrap described in terraform/README.md
+make aws-down                    # tear everything down again
+```
+
+> It costs roughly **$0.32 per hour** while it exists. Destroy it when you are not using it.
+
+It also runs in **AWS Academy Learner Lab**, which forbids creating IAM roles: set
+`existing_iam_role_name = "LabRole"` and the lab's role is reused instead.
+
+Full instructions, architecture, security design, costs and the Learner Lab specifics:
+[`terraform/README.md`](terraform/README.md).
+
 ## Docker images
 
 | Image | Base | Runs as | Notes |
@@ -171,7 +194,8 @@ k8s/
 │   └── networkpolicy.yaml   default deny + per-tier allow rules
 └── overlays/
     ├── local/               images built on this machine (`:local`), debug logging
-    └── production/          registry images pinned by tag, HorizontalPodAutoscaler, pull secret
+    ├── production/          registry images pinned by tag, HorizontalPodAutoscaler, pull secret
+    └── aws/                 production + exposed through an AWS Application Load Balancer
 ```
 
 | Practice | Where |
@@ -217,16 +241,17 @@ flowchart LR
     p((start)) --> validate & test
     validate --> build
     test --> build
-    build --> e2e --> deploy
+    build --> e2e --> deploy & deploy-aws
 ```
 
 | Job | What it does |
 | --- | --- |
-| **validate** | Lints the Dockerfiles (hadolint) and scripts (shellcheck); validates the Kubernetes manifests (kubeconform), the Compose file, the Prometheus config and alert rules (promtool) and the dashboard JSON |
+| **validate** | Lints the Dockerfiles (hadolint) and scripts (shellcheck); validates the Kubernetes manifests (kubeconform), the Compose file, the Prometheus config and alert rules (promtool) and the dashboard JSON; format-checks, validates and security-scans (Trivy) the Terraform code |
 | **test** | Checks out the application repository; installs, lints and runs the full test suite against a PostgreSQL service container; audits dependencies |
 | **build** | Builds both images with Buildx (layer cache in GitHub Actions cache), scans them with Trivy, pushes them to GitHub Container Registry |
 | **e2e** | Creates a throwaway kind cluster, deploys the just-pushed images with the real manifests, runs the smoke test |
 | **deploy** | Deploys to the target cluster from a self-hosted runner, then smoke-tests it; rolls back on failure |
+| **deploy-aws** | Deploys to EKS with temporary credentials obtained through GitHub OIDC (no stored AWS keys), smoke-tests it and publishes the load balancer URL; see [`terraform/README.md`](terraform/README.md) |
 
 Details:
 
