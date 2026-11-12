@@ -379,7 +379,9 @@ jobs:
   deploy-aws:
     name: Deploy to AWS (EKS)
     needs: [test, build, e2e]
-    # Opt-in: set the repository variable AWS_DEPLOY_ENABLED=true after
+    # Opt-in: set the *repository* variable AWS_DEPLOY_ENABLED=true (a job's
+    # `if:` is evaluated before it enters its environment, so an environment
+    # variable would never be seen here) after
     # `terraform apply` in terraform/eks (its outputs list every variable).
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest

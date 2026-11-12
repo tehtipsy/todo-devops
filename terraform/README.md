@@ -186,9 +186,15 @@ token is valid for 12 hours.
 1. In the DevOps repository on GitHub, create an environment named **`aws`** (*Settings →
    Environments*). Restrict it to the `main` branch, and add yourself as a required reviewer if
    every AWS deployment should wait for approval.
-2. Add the repository variables printed by
-   `terraform -chdir=terraform/eks output github_actions_variables`:
-   `AWS_DEPLOY_ENABLED`, `AWS_REGION`, `AWS_ROLE_ARN`, `EKS_CLUSTER_NAME`.
+2. Add the variables printed by
+   `terraform -chdir=terraform/eks output github_actions_variables` (*Settings → Secrets and
+   variables → Actions → Variables*):
+   - **`AWS_DEPLOY_ENABLED` as a repository variable.** It switches the job on, and GitHub
+     evaluates a job's `if:` before the job enters its environment, so an environment variable
+     is invisible there and the job is always skipped.
+   - `AWS_REGION`, `AWS_ROLE_ARN` and `EKS_CLUSTER_NAME` as repository variables or in the `aws`
+     environment; the job's steps can read either.
+
    (Learner Lab: different credentials, see [below](#aws-academy-learner-lab).)
 3. Push to `main` or start the workflow manually.
 
@@ -280,12 +286,16 @@ account):
    `make aws-up`), then [deploy from your machine](#from-your-machine-ecr). ECR is the simpler
    route in the lab: it needs no GitHub setup, and the nodes pull with `LabRole`.
 
-4. For the pipeline: in the `aws` environment of the DevOps repository, add the secrets
-   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from the same lab page, and
-   the variables `AWS_DEPLOY_ENABLED`, `AWS_REGION`, `EKS_CLUSTER_NAME` printed by
-   `terraform output github_actions_variables`. Do **not** set `AWS_ROLE_ARN`: that is what tells
-   the job to use the keys. The keys stop working when the lab session ends, so update the three
-   secrets before each deployment in a new session.
+4. For the pipeline, in the DevOps repository:
+   - in the `aws` environment, the secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+     `AWS_SESSION_TOKEN` from the same lab page, and the variables `AWS_REGION` and
+     `EKS_CLUSTER_NAME`;
+   - **`AWS_DEPLOY_ENABLED=true` as a repository variable**, not in the environment (see
+     [From the pipeline](#from-the-pipeline) for why).
+
+   Do **not** set `AWS_ROLE_ARN`: that is what tells the job to use the keys. The keys stop
+   working when the lab session ends, so update the three secrets before each deployment in a
+   new session.
 
 ### What this mode gives up
 
@@ -353,6 +363,7 @@ empty it, delete the `prevent_destroy` line in `bootstrap/main.tf`, and run
 | `AccessDenied` on `iam:CreateRole` | The account forbids creating IAM roles: set `existing_iam_role_name` (e.g. `"LabRole"`) |
 | `EntityAlreadyExists` for the OIDC provider | The account already has GitHub's OIDC provider: set `create_github_oidc_provider = false` |
 | `exec plugin ... v1alpha1` from kubectl | AWS CLI v1 is too old; install AWS CLI v2 and re-run `aws eks update-kubeconfig` |
+| `deploy-aws` is always skipped although the variables are set | `AWS_DEPLOY_ENABLED` is an environment variable: the job's `if:` only sees repository variables. Move it to *Settings → Secrets and variables → Actions → Variables* (repository) |
 | `deploy-aws` fails at *Configure AWS credentials* | The job must run in the `aws` environment and `github_repository` must match the repository exactly (case-sensitive) |
 | `deploy-aws` fails with `forbidden` from kubectl | The deploy role can only act in the `todo` namespace; check the namespace exists (`terraform apply` creates it) |
 | Pods `ImagePullBackOff` | The tag is not in ECR: check `aws ecr describe-images --repository-name todo-backend`, and the *Promote the tested images to ECR* step of the run |

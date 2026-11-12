@@ -34,7 +34,7 @@ output "github_actions_role_arn" {
 }
 
 output "github_actions_variables" {
-  description = "Repository variables to set in the DevOps repository to enable the deploy-aws job."
+  description = "Variables for the deploy-aws job. AWS_DEPLOY_ENABLED must be a repository variable; the others may live in the aws environment."
   value = merge(
     {
       AWS_DEPLOY_ENABLED = "true"
