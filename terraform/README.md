@@ -37,7 +37,7 @@ flowchart LR
             api --> pg[(postgres<br/>StatefulSet)]
         end
         pg --- ebs[(EBS gp3 volume<br/>encrypted)]
-        eks -- image pulls --> nat[NAT gateway] --> internet([GHCR / Docker Hub])
+        eks -- image pulls --> nat[NAT gateway] --> internet([ECR / Docker Hub])
     end
 
     gha[GitHub Actions] -- "OIDC → temporary credentials" --> iam[IAM role] -- "kubectl (todo namespace only)" --> eks
@@ -143,13 +143,14 @@ Browser ──HTTP──> ALB ──> frontend pods (Nginx: UI + /api/ proxy) �
                   └─ health check: /nginx-health                 images pulled from ECR by the nodes
 ```
 
-There are two ways to get images into the cluster:
+Either way, the cluster runs images from this stack's ECR repositories. There are two ways to get
+them there:
 
 | | From your machine | From the pipeline |
 | --- | --- | --- |
-| Registry | ECR, created by this stack | GHCR, pushed by the CI/CD pipeline |
-| Credentials needed | Your AWS credentials | GitHub environment set up as below; GHCR pull access |
-| Good for | First deployment, Learner Lab, demos | Continuous delivery from `main` |
+| Images | Built locally, pushed to ECR | Built and tested by the pipeline, then promoted from GHCR to ECR |
+| Credentials needed | Your AWS credentials | The GitHub environment set up below |
+| Good for | First deployment, quick demos | Continuous delivery: every push to `main` |
 
 ### From your machine (ECR)
 
@@ -180,7 +181,7 @@ applies the manifests with the images pinned to `$TAG`, waits for PostgreSQL, th
 frontend to roll out, and rolls a Deployment back if it does not become healthy. The ECR login
 token is valid for 12 hours.
 
-### From the pipeline (GHCR)
+### From the pipeline
 
 1. In the DevOps repository on GitHub, create an environment named **`aws`** (*Settings →
    Environments*). Restrict it to the `main` branch, and add yourself as a required reviewer if
@@ -189,12 +190,17 @@ token is valid for 12 hours.
    `terraform -chdir=terraform/eks output github_actions_variables`:
    `AWS_DEPLOY_ENABLED`, `AWS_REGION`, `AWS_ROLE_ARN`, `EKS_CLUSTER_NAME`.
    (Learner Lab: different credentials, see [below](#aws-academy-learner-lab).)
-3. The images in GHCR are private by default. Either make the `todo-backend` and `todo-frontend`
-   packages public, or add the secrets `REGISTRY_PULL_USERNAME` and `REGISTRY_PULL_TOKEN` (a token
-   with `read:packages`).
-4. Push to `main` or start the workflow manually. The **deploy-aws** job deploys the release that
-   passed the kind end-to-end test, smoke-tests it and publishes the load balancer URL in the run
-   summary.
+3. Push to `main` or start the workflow manually.
+
+The **deploy-aws** job runs after the kind end-to-end test passes. It copies the two tested images
+from GHCR into ECR, as an exact copy with the same digest (`docker buildx imagetools create
+--prefer-index=false`), so EKS runs exactly what was tested. A re-run finds the tag already in ECR
+and skips the copy. It then deploys that release, smoke-tests it and publishes the load balancer URL
+in the run summary. GHCR stays private: the job reads it with its own GitHub token, and the cluster
+never talks to GHCR.
+
+In standard mode the deploy role may push only to the app's two repositories; in Learner Lab the
+lab keys are used.
 
 ### Verify it
 
@@ -301,8 +307,8 @@ differences in Learner Lab.
 - **No AWS keys anywhere.** GitHub Actions authenticates with its OIDC token; the role's trust
   policy accepts only the `aws` environment of one repository, so branches, pull requests and
   other repositories cannot assume it. Credentials expire with the job.
-- **Least-privilege deploy identity.** The role's only AWS permission is `eks:DescribeCluster`.
-  Inside Kubernetes it maps to the group `todo-deployers`, which has the built-in `admin` role in
+- **Least-privilege deploy identity.** The role may only describe this cluster and push images to
+  the app's two ECR repositories. Inside Kubernetes it maps to the group `todo-deployers`, which has the built-in `admin` role in
   the `todo` namespace only, plus read/patch on that one namespace object. It cannot touch other
   namespaces, nodes or cluster-wide resources. This is why Terraform, not the pipeline, creates
   the namespace.
@@ -349,7 +355,8 @@ empty it, delete the `prevent_destroy` line in `bootstrap/main.tf`, and run
 | `exec plugin ... v1alpha1` from kubectl | AWS CLI v1 is too old; install AWS CLI v2 and re-run `aws eks update-kubeconfig` |
 | `deploy-aws` fails at *Configure AWS credentials* | The job must run in the `aws` environment and `github_repository` must match the repository exactly (case-sensitive) |
 | `deploy-aws` fails with `forbidden` from kubectl | The deploy role can only act in the `todo` namespace; check the namespace exists (`terraform apply` creates it) |
-| Pods `ImagePullBackOff` | GHCR: the packages are private; make them public or add the `REGISTRY_PULL_*` secrets. ECR: the tag was not pushed (`aws ecr describe-images --repository-name todo-backend`) |
+| Pods `ImagePullBackOff` | The tag is not in ECR: check `aws ecr describe-images --repository-name todo-backend`, and the *Promote the tested images to ECR* step of the run |
+| `deploy-aws` fails at *Promote the tested images to ECR* | `401`/`denied` from GHCR: the job needs `packages: read` (set in the workflow). `denied` from ECR in standard mode: re-run `terraform apply` so the deploy role gets the ECR permissions |
 | `tag invalid ... already exists` when pushing to ECR | Tags are immutable: commit your change so the tag changes, or delete the old image first |
 | The application URL does not answer right after the first deployment | The load balancer takes 2-3 minutes to become reachable; `kubectl -n todo describe ingress todo` shows its events |
 | HorizontalPodAutoscaler missing from the `todo` namespace | It was applied by a version of the production overlay without `namespace: todo` and landed in `default`; redeploy and `kubectl -n default delete hpa backend` |

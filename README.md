@@ -258,7 +258,7 @@ flowchart LR
 | **build** | Builds both images with Buildx (layer cache in GitHub Actions cache), scans them with Trivy, pushes them to GitHub Container Registry |
 | **e2e** | Creates a throwaway kind cluster, deploys the just-pushed images with the real manifests, runs the smoke test |
 | **deploy** | Deploys to the target cluster from a self-hosted runner, then smoke-tests it; rolls back on failure |
-| **deploy-aws** | Deploys to EKS with temporary credentials obtained through GitHub OIDC (no stored AWS keys), smoke-tests it and publishes the load balancer URL; see [`terraform/README.md`](terraform/README.md) |
+| **deploy-aws** | Promotes the tested images from GHCR to the environment's ECR (exact copy, same digest), deploys them to EKS with temporary AWS credentials (GitHub OIDC, no stored keys; Learner Lab: the lab's session keys), smoke-tests it and publishes the load balancer URL; see [`terraform/README.md`](terraform/README.md) |
 
 Details:
 
