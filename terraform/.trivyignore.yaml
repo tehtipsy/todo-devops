@@ -1,0 +1,23 @@
+# Accepted findings of `trivy config terraform/`. Each entry is a deliberate
+# trade-off; anything not listed here fails the CI scan.
+misconfigurations:
+  - id: AVD-AWS-0040
+    statement: >-
+      The EKS API endpoint is public so GitHub-hosted runners can deploy.
+      Every request is still authenticated through IAM, and the deploy role can
+      only act inside the todo namespace.
+  - id: AVD-AWS-0041
+    statement: >-
+      GitHub-hosted runners have no fixed IP range. The allowed CIDRs are the
+      variable endpoint_public_access_cidrs; narrow it when the pipeline does
+      not deploy to this cluster.
+  - id: AVD-AWS-0104
+    statement: >-
+      Worker nodes need outbound internet access (through the NAT gateway) to
+      pull images from GHCR and Docker Hub and to call AWS APIs.
+  - id: AVD-AWS-0132
+    statement: >-
+      The state bucket uses SSE-S3 (AES-256) instead of a customer-managed KMS
+      key. Access is restricted by IAM, public access is blocked and TLS is
+      enforced; a dedicated KMS key would add cost without changing who can
+      read the state.

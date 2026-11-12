@@ -1,0 +1,4 @@
+# Copy to backend.hcl and fill in from the output of the bootstrap stack:
+#   terraform -chdir=terraform/bootstrap output -raw backend_config > terraform/eks/backend.hcl
+bucket = "todo-tfstate-<account-id>-us-east-1"
+region = "us-east-1"

@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars (git-ignored) and adjust.
+
+# The DevOps repository whose deploy job may assume the AWS deploy role.
+github_repository = "your-github-user/todo-devops"
+
+aws_region = "us-east-1"
+
+# --- AWS Academy Learner Lab -------------------------------------------------
+# The lab forbids creating IAM roles and allows only us-east-1 / us-west-2.
+# Reuse the lab's role for the cluster, the nodes and the controllers:
+# existing_iam_role_name = "LabRole"
+
+# --- Optional ------------------------------------------------------------------
+
+# Cheaper, interruptible nodes - fine for a demo.
+# node_capacity_type = "SPOT"
+
+# Set to false if your AWS account already has the GitHub OIDC provider.
+# create_github_oidc_provider = false
+
+# Restrict the Kubernetes API to your own address when the pipeline does not deploy here.
+# endpoint_public_access_cidrs = ["203.0.113.10/32"]
