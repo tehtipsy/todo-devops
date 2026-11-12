@@ -1,0 +1,34 @@
+# AWS (EKS): the production overlay, exposed through an Application Load
+# Balancer created by the AWS Load Balancer Controller.
+#
+# Prerequisites created by Terraform (terraform/eks): the cluster, the `alb`
+# IngressClass, a default gp3 StorageClass and the `todo` namespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../production
+
+patches:
+  - target:
+      kind: Ingress
+      name: todo
+    patch: |-
+      - op: replace
+        path: /spec/ingressClassName
+        value: alb
+      # No DNS name is assumed: the ALB answers on its own hostname.
+      - op: remove
+        path: /spec/rules/0/host
+      - op: add
+        path: /metadata/annotations
+        value:
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          # Route straight to pod IPs instead of through NodePorts.
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/healthcheck-path: /nginx-health
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+          alb.ingress.kubernetes.io/load-balancer-attributes: routing.http.drop_invalid_header_fields.enabled=true
+          # Pods drain for 5s (preStop) and finish requests within 30s; waiting
+          # the ALB default of 300s on every rollout buys nothing.
+          alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30

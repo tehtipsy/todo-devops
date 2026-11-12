@@ -3,7 +3,7 @@
 # rollout. If a Deployment does not become healthy it is rolled back to its
 # previous revision and the script exits non-zero.
 #
-# Usage: scripts/deploy.sh <overlay>           overlay: local | production
+# Usage: scripts/deploy.sh <overlay>           overlay: local | production | aws
 #
 # Environment:
 #   IMAGE_REGISTRY   registry path of the images, e.g. ghcr.io/my-user
@@ -19,7 +19,7 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
 OVERLAY_DIR="${ROOT_DIR}/k8s/overlays/${OVERLAY}"
 
 if [[ ! -d "${OVERLAY_DIR}" ]]; then
-  echo "Unknown overlay '${OVERLAY}' (expected: local or production)" >&2
+  echo "Unknown overlay '${OVERLAY}' (expected: local, production or aws)" >&2
   exit 2
 fi
 
@@ -43,8 +43,8 @@ images:
     newName: ${IMAGE_REGISTRY}/todo-frontend
     newTag: "${IMAGE_TAG}"
 EOF
-elif [[ "${OVERLAY}" == "production" ]]; then
-  echo "IMAGE_REGISTRY and IMAGE_TAG are required for the production overlay" >&2
+elif [[ "${OVERLAY}" != "local" ]]; then
+  echo "IMAGE_REGISTRY and IMAGE_TAG are required for the ${OVERLAY} overlay" >&2
   exit 2
 fi
 
