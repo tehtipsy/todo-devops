@@ -4,7 +4,7 @@ APP_REPO_PATH ?= ../todo-app
 LOCAL_URL     ?= http://localhost:8080
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-monitoring down logs build test k8s-up k8s-deploy k8s-forward k8s-monitoring k8s-down smoke validate
+.PHONY: help up up-monitoring down logs build test k8s-up k8s-deploy k8s-forward k8s-monitoring k8s-down smoke validate tf-check aws-plan aws-up aws-down
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -56,5 +56,28 @@ smoke: ## End-to-end smoke test against LOCAL_URL
 validate: ## Render all Kubernetes manifests (catches YAML and kustomize errors)
 	kubectl kustomize k8s/overlays/local > /dev/null
 	kubectl kustomize k8s/overlays/production > /dev/null
+	kubectl kustomize k8s/overlays/aws > /dev/null
 	kubectl kustomize monitoring > /dev/null
 	@echo "manifests render cleanly"
+
+# --- AWS (Terraform) -----------------------------------------------------------
+
+TF_EKS := terraform -chdir=terraform/eks
+
+tf-check: ## Format-check and validate both Terraform stacks (no AWS access needed)
+	terraform fmt -check -recursive terraform
+	terraform -chdir=terraform/bootstrap init -backend=false -input=false > /dev/null
+	terraform -chdir=terraform/bootstrap validate
+	$(TF_EKS) init -backend=false -input=false > /dev/null
+	$(TF_EKS) validate
+
+aws-plan: ## Show what `aws-up` would change in AWS
+	$(TF_EKS) init -backend-config=backend.hcl -input=false
+	$(TF_EKS) plan -out=eks.tfplan
+
+aws-up: ## Create or update the EKS environment (applies the reviewed plan)
+	$(TF_EKS) apply eks.tfplan
+	aws eks update-kubeconfig --region "$$($(TF_EKS) output -raw region)" --name "$$($(TF_EKS) output -raw cluster_name)"
+
+aws-down: ## Destroy the EKS environment (deletes the application data)
+	$(TF_EKS) destroy
