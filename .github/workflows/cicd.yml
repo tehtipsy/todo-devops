@@ -2,9 +2,9 @@ name: CI/CD
 
 # One pipeline from source to a running deployment:
 #
-#   validate ─┐
-#             ├─> build (backend, frontend) ─> e2e (kind) ─> deploy (cluster)
-#   test ─────┘
+#   validate ─┐                                            ┌─> deploy     (self-hosted cluster)
+#             ├─> build (backend, frontend) ─> e2e (kind) ─┤
+#   test ─────┘                                            └─> deploy-aws (EKS, via OIDC)
 #
 # It runs when this repository changes and when the application repository
 # reports a new commit on its main branch (repository_dispatch).
@@ -63,7 +63,7 @@ jobs:
 
       - name: Validate Kubernetes manifests
         run: |
-          for overlay in local production; do
+          for overlay in local production aws; do
             echo "::group::overlay: ${overlay}"
             kubectl kustomize "k8s/overlays/${overlay}" |
               docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0 -strict -summary -
@@ -90,6 +90,38 @@ jobs:
 
       - name: Validate Grafana dashboard JSON
         run: python3 -m json.tool monitoring/dashboards/todo-backend.json > /dev/null
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive -diff terraform
+
+      # No AWS credentials here: providers and modules are installed, the state
+      # backend is skipped, and the configuration is checked for consistency.
+      - name: Validate Terraform
+        run: |
+          for stack in bootstrap eks; do
+            echo "::group::${stack}"
+            terraform -chdir="terraform/${stack}" init -backend=false -input=false
+            terraform -chdir="terraform/${stack}" validate
+            echo "::endgroup::"
+          done
+
+      - name: Scan Terraform for misconfigurations
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform
+          severity: HIGH,CRITICAL
+          # Example manifests bundled inside downloaded modules are not ours.
+          skip-dirs: "**/examples"
+          # Accepted findings, each with its justification.
+          trivyignores: terraform/.trivyignore.yaml
+          exit-code: "1"
 
   # ---------------------------------------------------------------------------
   test:
@@ -342,3 +374,86 @@ jobs:
           trap 'kill "${forward_pid}"' EXIT
           sleep 3
           scripts/smoke-test.sh http://localhost:18080
+
+  # ---------------------------------------------------------------------------
+  deploy-aws:
+    name: Deploy to AWS (EKS)
+    needs: [test, build, e2e]
+    # Opt-in: set the repository variable AWS_DEPLOY_ENABLED=true after
+    # `terraform apply` in terraform/eks (its outputs list every variable).
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    # The IAM role's trust policy only accepts jobs running in this environment.
+    environment:
+      name: aws
+      url: ${{ steps.url.outputs.app_url }}
+    permissions:
+      contents: read
+      # Lets the job request a GitHub OIDC token to exchange for AWS credentials.
+      id-token: write
+    concurrency:
+      group: deploy-aws
+      cancel-in-progress: false
+    env:
+      IMAGE_REGISTRY: ${{ needs.test.outputs.image_registry }}
+      IMAGE_TAG: ${{ needs.test.outputs.image_tag }}
+    steps:
+      - name: Check out DevOps repository
+        uses: actions/checkout@v7
+
+      # Preferred: keyless. With AWS_ROLE_ARN set, the job trades its GitHub
+      # OIDC token for credentials that expire when the job ends; no AWS key
+      # exists anywhere.
+      - name: Configure AWS credentials (OIDC)
+        if: vars.AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: github-${{ github.run_id }}
+
+      # Fallback for sandbox accounts that cannot create IAM roles (AWS Academy
+      # Learner Lab): the session's temporary keys, stored as environment
+      # secrets. They expire with the lab session and must be refreshed.
+      - name: Configure AWS credentials (temporary keys)
+        if: vars.AWS_ROLE_ARN == ''
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER_NAME }}"
+
+      - name: Deploy
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_PULL_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_PULL_TOKEN }}
+        run: scripts/deploy.sh aws
+
+      - name: Smoke test
+        run: |
+          kubectl -n todo port-forward svc/frontend 18080:80 > /dev/null &
+          forward_pid=$!
+          trap 'kill "${forward_pid}"' EXIT
+          sleep 3
+          scripts/smoke-test.sh http://localhost:18080
+
+      # The ALB is created asynchronously by the load balancer controller; on
+      # the very first deployment its hostname can take a minute to appear.
+      - name: Publish application URL
+        id: url
+        run: |
+          for _ in $(seq 1 30); do
+            host="$(kubectl -n todo get ingress todo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+            if [ -n "${host}" ]; then
+              echo "app_url=http://${host}" >> "${GITHUB_OUTPUT}"
+              echo "Application URL: http://${host}" >> "${GITHUB_STEP_SUMMARY}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::The load balancer has no hostname yet; check 'kubectl -n todo get ingress todo'."
