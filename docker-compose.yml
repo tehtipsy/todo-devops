@@ -1,0 +1,123 @@
+# Local environment: Postgres + API + Nginx, optionally Prometheus + Grafana.
+#
+#   cp .env.example .env            # then set the passwords
+#   docker compose up --build -d                        # app only
+#   docker compose --profile monitoring up --build -d   # app + monitoring
+#
+# The application source is expected next to this repository (../todo-app);
+# override with APP_REPO_PATH in .env.
+
+name: todo
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-todo}
+      POSTGRES_USER: ${DB_USER:?Set DB_USER in .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [data]
+
+  backend:
+    <<: *hardening
+    image: todo-backend:local
+    build:
+      context: ./docker/backend
+      additional_contexts:
+        app: ${APP_REPO_PATH:-../todo-app}
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_HOST: postgres
+      DB_NAME: ${DB_NAME:-todo}
+      DB_USER: ${DB_USER:?Set DB_USER in .env}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Not published: the API is reachable only through the Nginx reverse proxy.
+    networks: [edge, data]
+
+  frontend:
+    <<: *hardening
+    image: todo-frontend:local
+    build:
+      context: ./docker/frontend
+      additional_contexts:
+        app: ${APP_REPO_PATH:-../todo-app}
+    environment:
+      BACKEND_HOST: backend
+      BACKEND_PORT: "3000"
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d:uid=101,gid=101
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [edge]
+
+  prometheus:
+    <<: *hardening
+    profiles: [monitoring]
+    image: prom/prometheus:v3.16.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    networks: [edge]
+
+  grafana:
+    <<: *hardening
+    profiles: [monitoring]
+    image: grafana/grafana:13.3.1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # Log to stdout only: the root filesystem is read-only.
+      GF_LOG_MODE: console
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/todo-backend.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    tmpfs:
+      - /tmp
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    depends_on: [prometheus]
+    networks: [edge]
+
+networks:
+  edge:
+  data:
+    # Database network: no route to the outside world.
+    internal: true
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
