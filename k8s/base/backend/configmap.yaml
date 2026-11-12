@@ -1,0 +1,18 @@
+# Non-sensitive backend settings. Credentials live in the `todo-db-credentials`
+# Secret, which is created out of band and never stored in Git
+# (see scripts/ensure-secrets.sh).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+data:
+  NODE_ENV: production
+  PORT: "3000"
+  LOG_LEVEL: info
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: todo
+  DB_POOL_MAX: "10"
+  # Give Postgres time to come up on a cold cluster before crash-looping.
+  DB_CONNECT_RETRIES: "15"
+  SHUTDOWN_TIMEOUT_MS: "20000"
