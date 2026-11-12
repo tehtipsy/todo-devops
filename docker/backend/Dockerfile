@@ -52,7 +52,9 @@ COPY --from=app backend/package.json ./
 COPY --from=app backend/docs ./docs
 COPY --from=app backend/src ./src
 
-USER node
+# The image's `node` user, by numeric UID:GID - a name may not resolve on the
+# host, and a numeric user lets Kubernetes verify runAsNonRoot from the image.
+USER 1000:1000
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
