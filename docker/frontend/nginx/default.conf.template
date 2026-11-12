@@ -1,0 +1,82 @@
+# Rendered to /etc/nginx/conf.d/default.conf at container start.
+# ${BACKEND_HOST} and ${BACKEND_PORT} come from the environment; every other
+# $variable is an Nginx runtime variable and is left untouched by envsubst.
+
+upstream todo_backend {
+    server ${BACKEND_HOST}:${BACKEND_PORT};
+    # Reuse upstream connections instead of opening one per request.
+    keepalive 16;
+}
+
+# Per-client rate limit for the API: 20 req/s sustained, short bursts allowed.
+limit_req_zone $binary_remote_addr zone=api_per_client:10m rate=20r/s;
+
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    server_tokens off;
+    client_max_body_size 100k;
+
+    # Security headers. Declared once at server level: an add_header inside a
+    # location would silently replace the whole set for that location.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'" always;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    # Liveness/readiness endpoint for Docker and Kubernetes probes.
+    location = /nginx-health {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Reverse proxy. Only /api/ is forwarded: the backend's /metrics and
+    # /health endpoints are never reachable from outside.
+    location /api/ {
+        limit_req zone=api_per_client burst=40 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://todo_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Correlates the Nginx access log line with the backend's log lines.
+        proxy_set_header X-Request-Id $request_id;
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+
+        # A dead replica is retried on another one - but only for requests that
+        # are safe to repeat.
+        proxy_next_upstream error timeout http_502 http_503;
+        proxy_next_upstream_tries 2;
+    }
+
+    # Static assets: revalidated cheaply via ETag, so a new deployment is
+    # picked up without stale files.
+    location ~* \.(?:css|js|svg|ico)$ {
+        expires 5m;
+        try_files $uri =404;
+    }
+
+    # Anything that is not a real file is a 404 - in particular /metrics and
+    # /health, which exist on the backend but must not be exposed here.
+    location / {
+        expires -1;
+        try_files $uri $uri/ =404;
+    }
+}
