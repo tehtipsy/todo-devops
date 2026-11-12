@@ -5,11 +5,18 @@
 #
 #   docker build --build-context app=../todo-app -t todo-frontend docker/frontend
 
-ARG NGINX_VERSION=1.29
+ARG NGINX_VERSION=1.30
 
 # The unprivileged variant runs as UID 101 and listens on 8080, so the
 # container never needs root, not even to bind its port.
 FROM nginxinc/nginx-unprivileged:${NGINX_VERSION}-alpine
+
+# Apply Alpine security updates published since the base image was built:
+# upstream rebuilds lag behind (e.g. a critical brotli fix), and the CI image
+# scan fails on any fixable critical vulnerability. Root is needed only here.
+USER 0
+RUN apk upgrade --no-cache
+USER 101
 
 # Where /api/ is proxied to. Rendered into the config at container start by
 # the image's envsubst entrypoint (only these variables are substituted).
