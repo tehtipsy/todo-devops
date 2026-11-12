@@ -1,0 +1,62 @@
+# Helm values for kube-prometheus-stack (see scripts/monitoring-up.sh).
+
+grafana:
+  # Admin credentials come from a Secret created by the install script -
+  # no password is stored in this repository.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  # The sidecar loads every ConfigMap labelled grafana_dashboard=1 as a
+  # dashboard, which is how monitoring/dashboards/todo-backend.json gets in.
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+  # Grafana needs well over 256Mi while it boots (migrations, plugin loading);
+  # with a tighter limit it never becomes ready and is restarted in a loop.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    # Discover ServiceMonitors / PodMonitors / PrometheusRules regardless of
+    # their Helm release label, so application teams can ship their own.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+      limits:
+        memory: 1Gi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+
+# On minikube / kind these control-plane components bind to localhost and
+# cannot be scraped; disabling them avoids permanently firing "target down" alerts.
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false

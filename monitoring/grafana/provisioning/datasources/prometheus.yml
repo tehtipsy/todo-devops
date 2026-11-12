@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Fixed UID: the dashboard references the datasource by this id, which is
+    # also the UID kube-prometheus-stack assigns in Kubernetes.
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

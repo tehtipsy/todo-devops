@@ -1,0 +1,53 @@
+# Alert rules for the TODO backend. Same rules as
+# monitoring/prometheus/alerts.yml (used by docker-compose) - keep them in sync.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: todo-backend
+  labels:
+    app.kubernetes.io/part-of: todo
+spec:
+  groups:
+    - name: todo-backend
+      rules:
+        - alert: TodoBackendDown
+          expr: absent(up{job=~".*backend"} == 1)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: No TODO backend instance is up
+            description: Prometheus has not scraped a healthy backend instance for 2 minutes.
+
+        - alert: TodoBackendHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{job=~".*backend", status_code=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total{job=~".*backend"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: More than 5% of API requests are failing
+            description: 'The 5xx ratio has been {{ $value | humanizePercentage }} for 5 minutes.'
+
+        - alert: TodoBackendHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(http_request_duration_seconds_bucket{job=~".*backend", route=~"/api/.*"}[5m]))
+            ) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: API p95 latency is above 500ms
+            description: 'p95 latency has been {{ $value | humanizeDuration }} for 10 minutes.'
+
+        - alert: TodoBackendEventLoopLag
+          expr: max(nodejs_eventloop_lag_p99_seconds{job=~".*backend"}) > 0.2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Node.js event loop is lagging
+            description: 'p99 event loop lag has been {{ $value | humanizeDuration }} for 10 minutes.'
