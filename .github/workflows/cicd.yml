@@ -391,11 +391,15 @@ jobs:
       contents: read
       # Lets the job request a GitHub OIDC token to exchange for AWS credentials.
       id-token: write
+      # Reads the tested images from GHCR to promote them to ECR.
+      packages: read
     concurrency:
       group: deploy-aws
       cancel-in-progress: false
     env:
-      IMAGE_REGISTRY: ${{ needs.test.outputs.image_registry }}
+      # The images that passed the e2e job, in GHCR. They are promoted to ECR,
+      # which the cluster pulls from with its own IAM role.
+      SOURCE_REGISTRY: ${{ needs.test.outputs.image_registry }}
       IMAGE_TAG: ${{ needs.test.outputs.image_tag }}
     steps:
       - name: Check out DevOps repository
@@ -424,14 +428,51 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Promotion, not a rebuild: the manifest and layers are copied registry
+      # to registry, so EKS runs exactly the image digest that passed e2e.
+      # The cluster then pulls from ECR with its own IAM role - no GHCR
+      # credentials are needed in the cluster.
+      - name: Promote the tested images to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          for component in backend frontend; do
+            source="${SOURCE_REGISTRY}/todo-${component}:${IMAGE_TAG}"
+            target="${ECR_REGISTRY}/todo-${component}:${IMAGE_TAG}"
+            # ECR tags are immutable: a re-run of the same release finds the
+            # image already there and must not try to push it again.
+            if aws ecr describe-images --repository-name "todo-${component}" \
+                 --image-ids "imageTag=${IMAGE_TAG}" > /dev/null 2>&1; then
+              echo "todo-${component}:${IMAGE_TAG} is already in ECR - skipping"
+              continue
+            fi
+            # --prefer-index=false: an exact copy keeping the digest, instead of
+            # wrapping the image in a new image index with a new digest.
+            docker buildx imagetools create --prefer-index=false --tag "${target}" "${source}"
+            echo "Promoted todo-${component}:${IMAGE_TAG} to ECR"
+          done
+
       - name: Configure kubectl
         run: aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER_NAME }}"
 
       - name: Deploy
         env:
+          IMAGE_REGISTRY: ${{ steps.ecr.outputs.registry }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_PULL_USERNAME }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_PULL_TOKEN }}
         run: scripts/deploy.sh aws
 
       - name: Smoke test

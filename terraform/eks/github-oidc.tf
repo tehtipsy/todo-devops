@@ -69,19 +69,44 @@ resource "aws_iam_role" "github_actions_deploy" {
   max_session_duration = 3600
 }
 
-# The only AWS API the pipeline needs: reading the cluster's endpoint and CA
-# for `aws eks update-kubeconfig`. Everything else is Kubernetes RBAC.
+# Everything the pipeline needs from AWS: read the cluster's endpoint and CA
+# for `aws eks update-kubeconfig`, and promote the tested images into this
+# environment's ECR repositories. Everything else is Kubernetes RBAC.
 data "aws_iam_policy_document" "github_actions_deploy" {
   statement {
+    sid       = "DescribeCluster"
     actions   = ["eks:DescribeCluster"]
     resources = [aws_eks_cluster.this.arn]
+  }
+
+  # Registry login; this action has no resource-level permissions.
+  statement {
+    sid       = "EcrLogin"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  # Push (and check for) images in the app's two repositories only.
+  statement {
+    sid = "EcrPushAppImages"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+    ]
+    resources = [for repository in aws_ecr_repository.app : repository.arn]
   }
 }
 
 resource "aws_iam_role_policy" "github_actions_deploy" {
   count = local.github_deploy_role ? 1 : 0
 
-  name   = "describe-cluster"
+  name   = "deploy"
   role   = aws_iam_role.github_actions_deploy[0].id
   policy = data.aws_iam_policy_document.github_actions_deploy.json
 }
