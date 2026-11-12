@@ -1,0 +1,8 @@
+ignored:
+  # "COPY --from should reference a previously defined FROM alias": `app` is
+  # not a build stage but a named build context (--build-context app=...),
+  # which hadolint does not know about.
+  - DL3022
+  # "Pin versions in apk add": the only package is tini, pinned transitively by
+  # the Alpine release of the pinned base image.
+  - DL3018
